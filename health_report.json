@@ -1,0 +1,143 @@
+{
+  "timestamp": "2026-03-14T02:41:23.051919",
+  "branch": "claude/init-test-repos-oPogr",
+  "total": 11,
+  "ready": 11,
+  "results": {
+    "Financial-Data": {
+      "name": "Financial-Data",
+      "layer": 0,
+      "role": "Market data ingestion (yfinance fork)",
+      "lang": "Python",
+      "path_exists": true,
+      "branch": "claude/init-test-repos-oPogr",
+      "file_count": 62,
+      "status": "READY",
+      "errors": [],
+      "import_check": true
+    },
+    "open-bb": {
+      "name": "open-bb",
+      "layer": 0,
+      "role": "Macro/alt data aggregation (OpenBB)",
+      "lang": "Python/TS",
+      "path_exists": true,
+      "branch": "claude/init-test-repos-oPogr",
+      "file_count": 1206,
+      "status": "READY",
+      "errors": [],
+      "import_check": false
+    },
+    "QLIB": {
+      "name": "QLIB",
+      "layer": 1,
+      "role": "Alpha factor research & backtesting",
+      "lang": "Python",
+      "path_exists": true,
+      "branch": "claude/init-test-repos-oPogr",
+      "file_count": 333,
+      "status": "READY",
+      "errors": [],
+      "import_check": true
+    },
+    "quant-trading": {
+      "name": "quant-trading",
+      "layer": 1,
+      "role": "Strategy library (TA + patterns)",
+      "lang": "Python",
+      "path_exists": true,
+      "branch": "claude/init-test-repos-oPogr",
+      "file_count": 26,
+      "status": "READY",
+      "errors": [],
+      "import_check": true
+    },
+    "ML-Macro-Market": {
+      "name": "ML-Macro-Market",
+      "layer": 1,
+      "role": "Cyclical/secular regime classifier",
+      "lang": "Python",
+      "path_exists": true,
+      "branch": "claude/init-test-repos-oPogr",
+      "file_count": 1,
+      "status": "READY",
+      "errors": [],
+      "import_check": true
+    },
+    "ai-hedgefund": {
+      "name": "ai-hedgefund",
+      "layer": 2,
+      "role": "Multi-agent decision engine",
+      "lang": "Python",
+      "path_exists": true,
+      "branch": "claude/init-test-repos-oPogr",
+      "file_count": 140,
+      "status": "READY",
+      "errors": [],
+      "import_check": true
+    },
+    "Mav-Analysis": {
+      "name": "Mav-Analysis",
+      "layer": 2,
+      "role": "MCP server for Claude tools",
+      "lang": "Python",
+      "path_exists": true,
+      "branch": "claude/init-test-repos-oPogr",
+      "file_count": 392,
+      "status": "READY",
+      "errors": [],
+      "import_check": true
+    },
+    "Air-LLM": {
+      "name": "Air-LLM",
+      "layer": 2,
+      "role": "Lightweight LLM inference",
+      "lang": "Python",
+      "path_exists": true,
+      "branch": "claude/init-test-repos-oPogr",
+      "file_count": 30,
+      "status": "READY",
+      "errors": [],
+      "import_check": true
+    },
+    "AI-Newton": {
+      "name": "AI-Newton",
+      "layer": 2,
+      "role": "Physics-inspired symbolic AI",
+      "lang": "Rust/Python",
+      "path_exists": true,
+      "branch": "claude/init-test-repos-oPogr",
+      "file_count": 156,
+      "status": "READY",
+      "errors": [],
+      "cargo_exists": true,
+      "import_check": true
+    },
+    "hedgefund-tracker": {
+      "name": "hedgefund-tracker",
+      "layer": 3,
+      "role": "13F institutional tracker",
+      "lang": "Python",
+      "path_exists": true,
+      "branch": "claude/init-test-repos-oPogr",
+      "file_count": 80,
+      "status": "READY",
+      "errors": [],
+      "import_check": true
+    },
+    "Ruflo-agents": {
+      "name": "Ruflo-agents",
+      "layer": 3,
+      "role": "Claude-flow orchestration engine",
+      "lang": "TypeScript",
+      "path_exists": true,
+      "branch": "claude/init-test-repos-oPogr",
+      "file_count": 29020,
+      "status": "READY",
+      "errors": [],
+      "package_name": "claude-flow",
+      "version": "3.5.15",
+      "import_check": true
+    }
+  }
+}
