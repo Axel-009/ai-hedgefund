@@ -1,0 +1,2 @@
+{"timestamp": "2026-03-14T05:19:18.421661", "symbol": "MES", "action": "BUY", "qty": 64, "fill_price": 6181.0, "notional": 1977920.0, "new_position": 64}
+{"timestamp": "2026-03-14T05:19:18.437875", "symbol": "MES", "action": "SELL", "qty": 3, "fill_price": 6181.0, "notional": 92715.0, "new_position": -3}
