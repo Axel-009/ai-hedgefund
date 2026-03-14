@@ -55,6 +55,9 @@ node_modules
 # Outputs
 outputs/
 
+# Execution logs
+*.jsonl
+
 # Database files (users will have their own local databases)
 *.db
 *.db-journal
