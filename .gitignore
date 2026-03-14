@@ -55,6 +55,9 @@ node_modules
 # Outputs
 outputs/
 
+# Runtime data cache (live_data.py 5-min file cache)
+data_cache/
+
 # Execution logs and runtime artifacts
 *.jsonl
 platinum_report.json
