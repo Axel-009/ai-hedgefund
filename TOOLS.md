@@ -6,7 +6,7 @@ Bobby Axe has **zero write access** to this system.
 All actions are triggered by Axel directly. Bobby reports, never acts.
 
 ## Permitted (Read-Only)
-- Read files from: `reports/`, `logs/`, `openclaw_ceo.md`, `CLAUDE.md`
+- Read files from: `reports/`, `logs/`, `agent_config.md`, `CLAUDE.md`
 - Summarise report files already on disk
 - Answer questions about agent status, P&L, positions, risk flags
 
