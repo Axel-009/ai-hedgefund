@@ -55,6 +55,11 @@ node_modules
 # Outputs
 outputs/
 
+# Generated daily reports (auto-regenerated, not tracked)
+reports/*.html
+reports/
+logs/
+
 # Runtime data cache (live_data.py 5-min file cache)
 data_cache/
 
