@@ -23,7 +23,7 @@ fail() { echo -e "${RED}✗${NC} $*"; }
 info() { echo -e "${CYAN}→${NC} $*"; }
 
 BRANCH="claude/init-test-repos-oPogr"
-PROXY="http://local_proxy@127.0.0.1:34551/git/Axel-009"
+GH="https://github.com/Axel-009"
 
 echo -e "\n${BOLD}═══════════════════════════════════════════${NC}"
 echo -e "${BOLD}  AI Hedge Fund — Environment Setup        ${NC}"
@@ -35,18 +35,18 @@ echo -e "${BOLD}═════════════════════�
 # =============================================================================
 
 declare -a REPOS=(
-  # ── Internal Axel-009 repos (local proxy) ──────────────────────────────────
-  "ai-hedgefund|${PROXY}/ai-hedgefund|${BRANCH}"
-  "Financial-Data|${PROXY}/Financial-Data|${BRANCH}"
-  "ML-Macro-Market|${PROXY}/ML-Macro-Market|${BRANCH}"
-  "Mav-Analysis|${PROXY}/Mav-Analysis|${BRANCH}"
-  "QLIB|${PROXY}/QLIB|${BRANCH}"
-  "Ruflo-agents|${PROXY}/Ruflo-agents|${BRANCH}"
-  "AI-Newton|${PROXY}/AI-Newton|${BRANCH}"
-  "Air-LLM|${PROXY}/Air-LLM|${BRANCH}"
-  "hedgefund-tracker|${PROXY}/hedgefund-tracker|${BRANCH}"
-  "open-bb|${PROXY}/open-bb|${BRANCH}"
-  "quant-trading|${PROXY}/quant-trading|${BRANCH}"
+  # ── Axel-009 repos (public GitHub) ─────────────────────────────────────────
+  "ai-hedgefund|${GH}/ai-hedgefund.git|${BRANCH}"
+  "Financial-Data|${GH}/Financial-Data.git|${BRANCH}"
+  "ML-Macro-Market|${GH}/ML-Macro-Market.git|${BRANCH}"
+  "Mav-Analysis|${GH}/Mav-Analysis.git|${BRANCH}"
+  "QLIB|${GH}/QLIB.git|${BRANCH}"
+  "Ruflo-agents|${GH}/Ruflo-agents.git|${BRANCH}"
+  "AI-Newton|${GH}/AI-Newton.git|${BRANCH}"
+  "Air-LLM|${GH}/Air-LLM.git|${BRANCH}"
+  "hedgefund-tracker|${GH}/hedgefund-tracker.git|${BRANCH}"
+  "open-bb|${GH}/open-bb.git|${BRANCH}"
+  "quant-trading|${GH}/quant-trading.git|${BRANCH}"
 
   # ── External public repos (GitHub) ─────────────────────────────────────────
   # HFT execution engine sources
