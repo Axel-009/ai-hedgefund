@@ -67,6 +67,42 @@ except ImportError:
     except ImportError:
         _SPBridge = None
 
+# FinRL DRL bridge (A2C/PPO/SAC via StableBaselines3)
+try:
+    from src.models.finrl_bridge import FinRLBridge as _FinRLBridge
+except ImportError:
+    try:
+        from models.finrl_bridge import FinRLBridge as _FinRLBridge
+    except ImportError:
+        _FinRLBridge = None
+
+# Deep-Trading feature engine (12-feature state + volatility regime)
+try:
+    from src.models.deep_trading_features import DeepTradingFeatures as _DTFeatures
+except ImportError:
+    try:
+        from models.deep_trading_features import DeepTradingFeatures as _DTFeatures
+    except ImportError:
+        _DTFeatures = None
+
+# NVIDIA TFT adapter (multi-horizon forecasting)
+try:
+    from src.models.nvidia_tft_adapter import NVIDIATFTAdapter as _TFTAdapter
+except ImportError:
+    try:
+        from models.nvidia_tft_adapter import NVIDIATFTAdapter as _TFTAdapter
+    except ImportError:
+        _TFTAdapter = None
+
+# KServe adapter (production model serving)
+try:
+    from src.models.kserve_adapter import KServeAdapter as _KServeAdapter
+except ImportError:
+    try:
+        from models.kserve_adapter import KServeAdapter as _KServeAdapter
+    except ImportError:
+        _KServeAdapter = None
+
 EXEC_LOG_PATH = Path(__file__).parent / "execution_log.jsonl"
 UNIVERSE_LOG  = Path(__file__).parent / "daily_universe.jsonl"
 
@@ -143,6 +179,10 @@ class SignalType(Enum):
     FALLEN_ANGEL_BUY = "FALLEN_ANGEL_BUY"
     ML_AGENT_BUY     = "ML_AGENT_BUY"     # Stock-Prediction-Models ES agent
     ML_AGENT_SELL    = "ML_AGENT_SELL"    # Stock-Prediction-Models ES agent
+    DRL_AGENT_BUY    = "DRL_AGENT_BUY"   # FinRL PPO/A2C/SAC DRL agent
+    DRL_AGENT_SELL   = "DRL_AGENT_SELL"  # FinRL PPO/A2C/SAC DRL agent
+    TFT_BUY          = "TFT_BUY"         # NVIDIA TFT multi-horizon forecast
+    TFT_SELL         = "TFT_SELL"        # NVIDIA TFT multi-horizon forecast
     HOLD             = "HOLD"
 
 @dataclass
@@ -454,20 +494,62 @@ class DailyUniverseScanner:
             is_fallen = ticker in US_UNIVERSE["fallen_angel_equity"]
             fallen_bonus = 0.03 if is_fallen else 0.0   # Structural edge bonus
 
-            # ML directional score from Stock-Prediction-Models ES agent
-            ml_score = 0.0
+            closes_list = prices[ticker].tolist()
+            vols_list   = (vol_df[ticker].tolist()
+                           if vol_df is not None and ticker in vol_df.columns
+                           else [1_000_000.0] * len(closes_list))
+
+            # ── ML ensemble scores ──────────────────────────────────────────
+            # Each score ∈ [-1, +1]; scaled to ~±2% contribution to ranking
+            ml_score  = 0.0  # ES agent (Stock-Prediction-Models)
+            drl_score = 0.0  # DRL agent (FinRL)
+            tft_score = 0.0  # TFT forecast (NVIDIA)
+            vol_regime = "MED_VOL"
+
             if ml_bridge is not None:
                 try:
-                    closes_list  = prices[ticker].tolist()
-                    vols_list    = (vol_df[ticker].tolist()
-                                    if vol_df is not None and ticker in vol_df.columns
-                                    else [1_000_000.0] * len(closes_list))
                     ml_score = ml_bridge.ml_score(ticker, closes_list, vols_list)
                 except Exception:
-                    ml_score = 0.0
+                    pass
 
-            # ml_score ∈ [-1, +1]; scaled to ~±2% contribution to ranking
-            score = alpha_annual + fallen_bonus - max(vol - 0.30, 0) * 0.5 + ml_score * 0.02
+            # FinRL DRL score
+            try:
+                from src.models.finrl_bridge import FinRLBridge as _FB
+                _fb = _FB()
+                drl_score = _fb.drl_score(ticker, closes_list, vols_list)
+            except Exception:
+                pass
+
+            # NVIDIA TFT score
+            try:
+                from src.models.nvidia_tft_adapter import NVIDIATFTAdapter as _TFTA
+                _ta = _TFTA()
+                tft_score = _ta.tft_score(ticker, closes_list, vols_list)
+            except Exception:
+                pass
+
+            # Deep-Trading volatility regime
+            try:
+                from src.models.deep_trading_features import DeepTradingFeatures as _DT
+                _dt = _DT()
+                vol_regime = _dt.vol_regime(closes_list)
+            except Exception:
+                pass
+            # ────────────────────────────────────────────────────────────────
+
+            # Combined ML signal: simple average of all available scores
+            ml_signals = [s for s in [ml_score, drl_score, tft_score] if s != 0.0]
+            combined_ml = float(np.mean(ml_signals)) if ml_signals else 0.0
+
+            # Vol regime penalty
+            vol_regime_penalty = {"LOW_VOL": 0.0, "MED_VOL": 0.0,
+                                   "HIGH_VOL": -0.01, "STRESS": -0.02}.get(vol_regime, 0.0)
+
+            score = (alpha_annual + fallen_bonus
+                     - max(vol - 0.30, 0) * 0.5
+                     + combined_ml * 0.02
+                     + vol_regime_penalty)
+
             scores[ticker] = {
                 "score":           round(score, 4),
                 "alpha_annual":    round(alpha_annual, 4),
@@ -475,6 +557,10 @@ class DailyUniverseScanner:
                 "vol_annual":      round(vol, 4),
                 "mom_60d":         round(mom_60, 4),
                 "ml_score":        round(ml_score, 4),
+                "drl_score":       round(drl_score, 4),
+                "tft_score":       round(tft_score, 4),
+                "combined_ml":     round(combined_ml, 4),
+                "vol_regime":      vol_regime,
                 "is_fallen_angel": is_fallen,
                 "category":        self._categorize(ticker),
             }
@@ -559,10 +645,29 @@ class ExecutionEngine:
         self.book    = ExchangeCoreAdapter()
         self.scanner = DailyUniverseScanner()
 
-        # Stock-Prediction-Models ES agent (confirmation signal layer)
-        self.ml_bridge = _SPBridge() if _SPBridge is not None else None
-        if self.ml_bridge:
-            print("[EXEC] StockPredictionBridge loaded (huseinzol05/Stock-Prediction-Models)")
+        # ── ML Signal Layer ────────────────────────────────────────────────────
+        # Stock-Prediction-Models ES agent (tier-1 confirmation)
+        self.ml_bridge  = _SPBridge()    if _SPBridge    is not None else None
+        # FinRL DRL agent — PPO/A2C/SAC (tier-2 directional)
+        self.drl_bridge = _FinRLBridge() if _FinRLBridge is not None else None
+        # Deep-Trading feature engine (enriched state + volatility)
+        self.dt_features= _DTFeatures()  if _DTFeatures  is not None else None
+        # NVIDIA TFT multi-horizon forecasting (tier-3 directional)
+        self.tft_adapter= _TFTAdapter()  if _TFTAdapter  is not None else None
+        # KServe production serving adapter
+        self.kserve     = _KServeAdapter() if _KServeAdapter is not None else None
+
+        loaded = [
+            ("StockPredictionBridge",   self.ml_bridge),
+            ("FinRLBridge",             self.drl_bridge),
+            ("DeepTradingFeatures",     self.dt_features),
+            ("NVIDIATFTAdapter",        self.tft_adapter),
+            ("KServeAdapter",           self.kserve),
+        ]
+        for name, obj in loaded:
+            if obj is not None:
+                print(f"[EXEC] {name} loaded")
+        # ─────────────────────────────────────────────────────────────────────
 
         self._active_universe: list[str] = []
         self._weights:         dict[str, float] = {}
@@ -600,29 +705,66 @@ class ExecutionEngine:
         if signal is None:
             return None
 
-        # ── ML Confirmation (Stock-Prediction-Models ES agent) ────────────────
-        ml_sig = None
-        ml_tag = ""
-        effective_min_edge = self.micro.MIN_EDGE_BPS  # 2.0 bps baseline
+        # ── ML Signal Ensemble ────────────────────────────────────────────────
+        # Tier-1: Stock-Prediction-Models ES agent  (fast, pure-numpy)
+        # Tier-2: FinRL DRL agent                   (medium-term RSI/MACD)
+        # Tier-3: NVIDIA TFT                        (multi-horizon ETS/TFT)
+        #
+        # Voting: each agree = +1, each disagree = -1, HOLD = 0
+        # Net vote >= +1 → confirm (threshold stays)
+        # Net vote <= -1 → dampen (+1bps per -1 vote, max +3bps)
+        # Net vote == 0  → neutral (threshold stays)
+        # ─────────────────────────────────────────────────────────────────────
+        micro_is_buy = signal.signal == SignalType.MICRO_PRICE_BUY
+        vote_score   = 0
+        tags         = []
 
+        # Deep-Trading feature enrichment (enrich close with 12-feature state)
+        dt_close = last   # fallback — use raw close
+        if self.dt_features is not None:
+            _obs = self.dt_features.push(ticker, last)
+            if _obs is not None:
+                # Use normalised close feature (index 3) as enriched price proxy
+                dt_close = last * (1 + float(_obs[3]) * 0.001)
+
+        # ES agent (tier-1)
         if self.ml_bridge is not None:
-            ml_sig = self.ml_bridge.get_signal(ticker, last)
-            micro_is_buy  = signal.signal == SignalType.MICRO_PRICE_BUY
-            ml_is_buy     = ml_sig == "ML_AGENT_BUY"
-            ml_is_sell    = ml_sig == "ML_AGENT_SELL"
+            ml_sig = self.ml_bridge.get_signal(ticker, dt_close)
+            if ml_sig == "ML_AGENT_BUY":
+                vote_score += (1 if micro_is_buy else -1)
+                tags.append("ES:" + ("✓" if micro_is_buy else "✗"))
+            elif ml_sig == "ML_AGENT_SELL":
+                vote_score += (-1 if micro_is_buy else 1)
+                tags.append("ES:" + ("✗" if micro_is_buy else "✓"))
 
-            if ml_sig is not None:
-                if (micro_is_buy and ml_is_buy) or (not micro_is_buy and ml_is_sell):
-                    # Both agree — confirmed, threshold stays
-                    ml_tag = "✓ML-CONFIRM"
-                else:
-                    # Disagreement — raise threshold 1bps to dampen noise
-                    effective_min_edge += 1.0
-                    ml_tag = "✗ML-DISAGREE(+1bps)"
-            else:
-                ml_tag = "ML-HOLD"
+        # FinRL DRL agent (tier-2)
+        if self.drl_bridge is not None:
+            drl_sig = self.drl_bridge.get_signal(ticker, dt_close)
+            if drl_sig == "DRL_AGENT_BUY":
+                vote_score += (1 if micro_is_buy else -1)
+                tags.append("DRL:" + ("✓" if micro_is_buy else "✗"))
+            elif drl_sig == "DRL_AGENT_SELL":
+                vote_score += (-1 if micro_is_buy else 1)
+                tags.append("DRL:" + ("✗" if micro_is_buy else "✓"))
 
-        # Re-check edge with (possibly raised) threshold
+        # NVIDIA TFT (tier-3)
+        if self.tft_adapter is not None:
+            tft_sig = self.tft_adapter.get_signal(ticker, dt_close)
+            if tft_sig == "TFT_BUY":
+                vote_score += (1 if micro_is_buy else -1)
+                tags.append("TFT:" + ("✓" if micro_is_buy else "✗"))
+            elif tft_sig == "TFT_SELL":
+                vote_score += (-1 if micro_is_buy else 1)
+                tags.append("TFT:" + ("✗" if micro_is_buy else "✓"))
+
+        # Adjust edge threshold based on vote
+        bps_penalty = max(0, -vote_score)   # +1bps per negative vote
+        effective_min_edge = self.micro.MIN_EDGE_BPS + bps_penalty
+
+        vote_tag = (f"VOTE:{vote_score:+d}[{','.join(tags)}]"
+                    if tags else "VOTE:0[no-ML]")
+
+        # Re-check edge with vote-adjusted threshold
         if signal.edge_bps < effective_min_edge:
             return None
         # ─────────────────────────────────────────────────────────────────────
@@ -657,7 +799,7 @@ class ExecutionEngine:
         print(
             f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]} | "
             f"{action} {qty} {ticker} @ {limit_px:.2f} | "
-            f"edge={signal.edge_bps:.1f}bps | micro={signal.micro_price:.3f} | {ml_tag}"
+            f"edge={signal.edge_bps:.1f}bps | micro={signal.micro_price:.3f} | {vote_tag}"
         )
         return order
 
@@ -698,8 +840,11 @@ class ExecutionEngine:
             "pending_orders":  len([o for o in self._pending_orders.values()
                                     if o.status == "PENDING"]),
         }
-        if self.ml_bridge is not None:
-            summary["ml_bridge"] = self.ml_bridge.status()
+        if self.ml_bridge   is not None: summary["ml_bridge"]   = self.ml_bridge.status()
+        if self.drl_bridge  is not None: summary["drl_bridge"]  = self.drl_bridge.status()
+        if self.tft_adapter is not None: summary["tft_adapter"] = self.tft_adapter.status()
+        if self.kserve      is not None: summary["kserve"]      = self.kserve.status()
+        if self.dt_features is not None: summary["dt_features"] = self.dt_features.status()
         return summary
 
 
@@ -709,26 +854,98 @@ class ExecutionEngine:
 # ==============================================================================
 def build_resource_index() -> dict:
     """
-    Indexes the Quant-Developers-Resources repo into categories
-    relevant to the execution engine and platform.
+    Indexes all integrated third-party repositories for the platform.
+
+    Quant-Developers-Resources  — quant reference library
+    Stock-Prediction-Models     — ES agent, LSTM/GRU models (huseinzol05)
+    FinRL                       — DRL trading agents (AI4Finance)
+    Deep-Trading                — 12-feature state + volatility (Rachnog)
+    DeepLearningExamples        — TFT, PyTorch models (NVIDIA)
+    kserve                      — production model serving (kserve)
+    DeepLearning                — DL reference + Li Hang code (Mikoto10032)
+    wondertrader                — HFT C++ engine reference
+    exchange-core               — Java order matching reference
     """
-    base = Path("/home/user/Quant-Developers-Resources")
     index = {}
-    priority_dirs = [
+
+    # Quant-Developers-Resources (priority subdirs)
+    qdr_base = Path("/home/user/Quant-Developers-Resources")
+    qdr_dirs = [
         "Technical_Indicators", "Python", "Reinforcement Learning",
         "Financial Theory", "High Performance Computing",
         "Optimization Theory", "Signal Processing", "Econometrics",
         "C++", "FPGA", "Statsmodels",
     ]
-    for d in priority_dirs:
-        p = base / d
+    for d in qdr_dirs:
+        p = qdr_base / d
         if p.exists():
             files = list(p.rglob("*"))
-            index[d] = {
+            index[f"QDR/{d}"] = {
                 "file_count": len(files),
-                "files": [str(f.relative_to(base)) for f in files
-                          if f.is_file()][:10],
+                "files": [str(f.relative_to(qdr_base)) for f in files if f.is_file()][:5],
             }
+
+    # Third-party ML repos
+    ml_repos = {
+        "Stock-Prediction-Models": {
+            "path": "/home/user/Stock-Prediction-Models",
+            "role": "ES/RL agents, LSTM/GRU deep learning models",
+            "key_modules": ["agent", "deep-learning", "realtime-agent", "simulation"],
+        },
+        "FinRL": {
+            "path": "/home/user/FinRL",
+            "role": "DRL trading agents (A2C/DDPG/PPO/SAC/TD3)",
+            "key_modules": ["finrl/agents/stablebaselines3",
+                            "finrl/meta/env_stock_trading",
+                            "finrl/meta/paper_trading"],
+        },
+        "Deep-Trading": {
+            "path": "/home/user/Deep-Trading",
+            "role": "12-feature state, volatility LSTM, Bayesian NN",
+            "key_modules": ["volatility", "multivariate", "strategy", "bayesian"],
+        },
+        "DeepLearningExamples": {
+            "path": "/home/user/DeepLearningExamples",
+            "role": "NVIDIA TFT multi-horizon forecasting, PyTorch models",
+            "key_modules": ["PyTorch/Forecasting/TFT"],
+        },
+        "kserve": {
+            "path": "/home/user/kserve",
+            "role": "Production Kubernetes model serving (v2 REST/gRPC)",
+            "key_modules": ["python/kserve", "charts"],
+        },
+        "DeepLearning": {
+            "path": "/home/user/DeepLearning",
+            "role": "DL reference, Li Hang Statistical Learning Methods",
+            "key_modules": ["Projects/lihang-code", "notes", "books"],
+        },
+        "wondertrader": {
+            "path": "/home/user/wondertrader",
+            "role": "HFT C++ engine (micro-price signal source)",
+            "key_modules": [],
+        },
+        "exchange-core": {
+            "path": "/home/user/exchange-core",
+            "role": "Java LMAX Disruptor order matching (150ns latency)",
+            "key_modules": [],
+        },
+    }
+
+    for repo_name, meta in ml_repos.items():
+        p = Path(meta["path"])
+        if p.exists():
+            py_files = list(p.rglob("*.py"))
+            ipynb    = list(p.rglob("*.ipynb"))
+            index[repo_name] = {
+                "role":       meta["role"],
+                "py_files":   len(py_files),
+                "notebooks":  len(ipynb),
+                "key_modules": meta["key_modules"],
+                "present":    True,
+            }
+        else:
+            index[repo_name] = {"present": False}
+
     return index
 
 
@@ -740,12 +957,13 @@ def run_execution_arm(paper_nlv: float = 1_000_000.0) -> dict:
     Full platform execution arm demo.
     In live mode: replace L1 quote simulation with real data feed.
     """
-    print("\n" + "="*60)
+    print("\n" + "="*70)
     print("  EXECUTION ARM — US SECURITIES HFT")
-    print("  WonderTrader Micro-Price + exchange-core Book")
-    print("  + Stock-Prediction-Models ES Agent (ML Confirmation)")
-    print("  Scope: US Equities + ETFs + IG/HY Credit")
-    print("="*60)
+    print("  Primary:  WonderTrader Micro-Price + exchange-core Book")
+    print("  ML Layer: ES Agent | FinRL DRL | Deep-Trading Features | NVIDIA TFT")
+    print("  Serving:  KServe (production) | local fallback (dev)")
+    print("  Scope:    US Equities + ETFs + IG/HY Credit")
+    print("="*70)
 
     from macro_engine   import MacroEngine
     from alpha_optimizer import AlphaOptimizerEngine
@@ -787,11 +1005,17 @@ def run_execution_arm(paper_nlv: float = 1_000_000.0) -> dict:
     print(f"  Positions:      {summary['positions']}")
     print(f"  Total Fills:    {summary['total_fills']}")
     print(f"  Gross P&L:      ${summary['gross_pnl']:,.2f}")
-    if "ml_bridge" in summary:
-        mb = summary["ml_bridge"]
-        print(f"\n[ML BRIDGE] {mb['model_type']}")
-        print(f"  Agents primed: {mb['agents_primed']} tickers")
-        print(f"  Last actions:  {mb['last_actions']}")
+    for bridge_key, label in [
+        ("ml_bridge",   "ES Agent   (Stock-Prediction-Models)"),
+        ("drl_bridge",  "DRL Agent  (FinRL)"),
+        ("tft_adapter", "TFT        (NVIDIA DeepLearningExamples)"),
+        ("dt_features", "Features   (Deep-Trading)"),
+        ("kserve",      "Serving    (KServe)"),
+    ]:
+        if bridge_key in summary:
+            b = summary[bridge_key]
+            tickers = b.get("tickers", b.get("tickers_buffered", []))
+            print(f"  [{label}] tickers={len(tickers)} | {b.get('model_type','')}")
 
     # 6. Resource index
     res_idx = build_resource_index()
