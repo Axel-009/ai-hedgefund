@@ -112,6 +112,16 @@ except ImportError:
     except ImportError:
         _MCBridge = None
 
+# UniverseClassifier — top-down vs bottom-up quality tier reconciliation
+# Methodology: MODERATE-Project/building-stock-analysis (T3.1 EPC + T3.2 static)
+try:
+    from src.models.universe_classifier import UniverseClassifier as _UnivClassifier
+except ImportError:
+    try:
+        from models.universe_classifier import UniverseClassifier as _UnivClassifier
+    except ImportError:
+        _UnivClassifier = None
+
 EXEC_LOG_PATH = Path(__file__).parent / "execution_log.jsonl"
 UNIVERSE_LOG  = Path(__file__).parent / "daily_universe.jsonl"
 
@@ -194,6 +204,8 @@ class SignalType(Enum):
     TFT_SELL         = "TFT_SELL"        # NVIDIA TFT multi-horizon forecast
     MC_BUY           = "MC_BUY"          # ARIMA+Laplacian MC P(up)>55%
     MC_SELL          = "MC_SELL"         # ARIMA+Laplacian MC P(up)<45%
+    QUALITY_BUY      = "QUALITY_BUY"    # Top-down↓/Bottom-up↑ divergence (undervalued vs macro)
+    QUALITY_SELL     = "QUALITY_SELL"   # Top-down↑/Bottom-up↓ divergence (overvalued vs macro)
     HOLD             = "HOLD"
 
 @dataclass
@@ -437,7 +449,8 @@ class DailyUniverseScanner:
     def scan(self, macro_regime: str = "TRANSITION",
              macro_universe: Optional[list] = None,
              top_n: int = 20,
-             ml_bridge=None) -> dict:
+             ml_bridge=None,
+             univ_clf=None) -> dict:
         """
         Full daily scan. Returns ranked universe for execution.
         Called once pre-market by the orchestrator.
@@ -445,8 +458,10 @@ class DailyUniverseScanner:
         Parameters
         ----------
         ml_bridge : StockPredictionBridge, optional
-            If provided, adds an ML directional score to each ticker's
-            composite ranking score. Pass the ExecutionEngine's bridge instance.
+            ES agent directional score (tier-1).
+        univ_clf : UniverseClassifier, optional
+            Top-down vs bottom-up quality score (tier-5).
+            Source: MODERATE-Project/building-stock-analysis methodology.
         """
         print(f"\n[SCANNER] Daily universe scan — regime: {macro_regime}")
 
@@ -555,10 +570,25 @@ class DailyUniverseScanner:
                 mc_score = _mc.mc_score(ticker, closes_list)
             except Exception:
                 pass
+
+            # UniverseClassifier quality score (tier-5 — top-down vs bottom-up)
+            # Source: building-stock-analysis T3.1/T3.2 reconciliation methodology
+            quality_score = 0.0
+            quality_td_tier = "D"
+            quality_bu_tier = "D"
+            if univ_clf is not None:
+                try:
+                    cat = self._categorize(ticker)
+                    quality_score = univ_clf.quality_score(ticker, closes_list, category=cat)
+                    if ticker in univ_clf._cache:
+                        quality_td_tier, quality_bu_tier, _ = univ_clf._cache[ticker]
+                except Exception:
+                    pass
             # ────────────────────────────────────────────────────────────────
 
             # Combined ML signal: simple average of all available scores
-            ml_signals = [s for s in [ml_score, drl_score, tft_score, mc_score] if s != 0.0]
+            ml_signals = [s for s in [ml_score, drl_score, tft_score, mc_score, quality_score]
+                          if s != 0.0]
             combined_ml = float(np.mean(ml_signals)) if ml_signals else 0.0
 
             # Vol regime penalty
@@ -571,19 +601,22 @@ class DailyUniverseScanner:
                      + vol_regime_penalty)
 
             scores[ticker] = {
-                "score":           round(score, 4),
-                "alpha_annual":    round(alpha_annual, 4),
-                "beta":            round(float(beta), 4),
-                "vol_annual":      round(vol, 4),
-                "mom_60d":         round(mom_60, 4),
-                "ml_score":        round(ml_score, 4),
-                "drl_score":       round(drl_score, 4),
-                "tft_score":       round(tft_score, 4),
-                "mc_score":        round(mc_score, 4),
-                "combined_ml":     round(combined_ml, 4),
-                "vol_regime":      vol_regime,
-                "is_fallen_angel": is_fallen,
-                "category":        self._categorize(ticker),
+                "score":            round(score, 4),
+                "alpha_annual":     round(alpha_annual, 4),
+                "beta":             round(float(beta), 4),
+                "vol_annual":       round(vol, 4),
+                "mom_60d":          round(mom_60, 4),
+                "ml_score":         round(ml_score, 4),
+                "drl_score":        round(drl_score, 4),
+                "tft_score":        round(tft_score, 4),
+                "mc_score":         round(mc_score, 4),
+                "quality_score":    round(quality_score, 4),
+                "quality_td_tier":  quality_td_tier,
+                "quality_bu_tier":  quality_bu_tier,
+                "combined_ml":      round(combined_ml, 4),
+                "vol_regime":       vol_regime,
+                "is_fallen_angel":  is_fallen,
+                "category":         self._categorize(ticker),
             }
 
         ranked = sorted(scores, key=lambda t: -scores[t]["score"])[:top_n]
@@ -679,6 +712,9 @@ class ExecutionEngine:
         self.kserve     = _KServeAdapter() if _KServeAdapter is not None else None
         # Monte Carlo bridge (ARIMA+Laplacian MC — prediction intervals + P(ITM))
         self.mc_bridge  = _MCBridge()      if _MCBridge      is not None else None
+        # UniverseClassifier — top-down vs bottom-up quality tier (tier-5)
+        # Source: MODERATE-Project/building-stock-analysis methodology
+        self.univ_clf   = _UnivClassifier() if _UnivClassifier is not None else None
 
         loaded = [
             ("StockPredictionBridge",   self.ml_bridge),
@@ -687,6 +723,7 @@ class ExecutionEngine:
             ("NVIDIATFTAdapter",        self.tft_adapter),
             ("KServeAdapter",           self.kserve),
             ("MonteCarloBridge",        self.mc_bridge),
+            ("UniverseClassifier",      self.univ_clf),
         ]
         for name, obj in loaded:
             if obj is not None:
@@ -703,7 +740,12 @@ class ExecutionEngine:
         """Receive regime + universe from MacroEngine."""
         self._regime = macro_result.get("regime", "TRANSITION")
         macro_univ   = macro_result.get("alpha_universe", [])
-        scan = self.scanner.scan(self._regime, macro_univ, ml_bridge=self.ml_bridge)
+        # Propagate regime to UniverseClassifier (top-down prior update)
+        if self.univ_clf is not None:
+            self.univ_clf.update_regime(self._regime)
+        scan = self.scanner.scan(self._regime, macro_univ,
+                                 ml_bridge=self.ml_bridge,
+                                 univ_clf=self.univ_clf)
         self._active_universe = scan["ranked"][:15]  # Top 15 US names
         print(f"[EXEC] Active universe updated: {self._active_universe}")
 
@@ -792,6 +834,21 @@ class ExecutionEngine:
                 vote_score += (-1 if micro_is_buy else 1)
                 prob = self.mc_bridge._last_probs.get(ticker, 0.5)
                 tags.append(f"MC:{'✗' if micro_is_buy else '✓'}(P={prob:.2f})")
+
+        # UniverseClassifier quality tier (tier-5) — top-down vs bottom-up
+        # Source: MODERATE-Project/building-stock-analysis T3.1/T3.2 methodology
+        if self.univ_clf is not None:
+            self.univ_clf.push_close(ticker, dt_close)
+            buf = self.univ_clf._buf.get(ticker, [])
+            if len(buf) >= 130:
+                cat = self.scanner._categorize(ticker)
+                q_sig = self.univ_clf.get_signal(ticker, buf, category=cat)
+                if q_sig == "QUALITY_BUY":
+                    vote_score += (1 if micro_is_buy else -1)
+                    tags.append("QUAL:" + ("✓" if micro_is_buy else "✗"))
+                elif q_sig == "QUALITY_SELL":
+                    vote_score += (-1 if micro_is_buy else 1)
+                    tags.append("QUAL:" + ("✗" if micro_is_buy else "✓"))
 
         # Adjust edge threshold based on vote
         bps_penalty = max(0, -vote_score)   # +1bps per negative vote

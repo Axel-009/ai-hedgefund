@@ -8,6 +8,11 @@
 #   KServeAdapter          — kserve/kserve (production model serving layer)
 #   MonteCarloBridge       — gist:b16f9d8cd0a9e817fd3baa3ce3cd0194
 #                            ARIMA(1,1,1) + Laplacian MC prediction intervals
+#   UniverseClassifier     — MODERATE-Project/building-stock-analysis
+#                            Top-down (macro regime) vs bottom-up (fundamentals)
+#                            XGB ensemble; EPC A→G → QUALITY_BUY/SELL signals
+#   ModelEvaluator         — port of building-stock-analysis/models_utils.py
+#                            Balanced accuracy, per-class F1, confusion matrix
 
 from .stock_prediction_bridge import StockPredictionBridge
 from .finrl_bridge             import FinRLBridge
@@ -15,6 +20,10 @@ from .deep_trading_features    import DeepTradingFeatures
 from .nvidia_tft_adapter       import NVIDIATFTAdapter
 from .kserve_adapter           import KServeAdapter
 from .monte_carlo_bridge       import MonteCarloBridge
+from .universe_classifier      import (UniverseClassifier,
+                                       build_dual_regime_features,
+                                       label_from_alpha)
+from .model_evaluator          import ModelEvaluator
 
 __all__ = [
     "StockPredictionBridge",
@@ -23,4 +32,8 @@ __all__ = [
     "NVIDIATFTAdapter",
     "KServeAdapter",
     "MonteCarloBridge",
+    "UniverseClassifier",
+    "build_dual_regime_features",
+    "label_from_alpha",
+    "ModelEvaluator",
 ]
