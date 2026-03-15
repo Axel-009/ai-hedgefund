@@ -59,22 +59,63 @@ All repos live under `/home/user/`. The primary repo is `/home/user/ai-hedgefund
 ## Architecture
 
 ```
+UniverseEngine (universe_engine.py)
+    ↓  full investable universe: S&P 500 + S&P 400 + S&P 600 + ETFs (~1,500+ securities)
+    ↓  GICS 4-tier pools (11 sectors / 25 industry groups / 74 industries / 163 sub-industries)
+    ↓  data sources: yfinance (free) + OpenBB (macro)
+
 MacroEngine (macro_engine.py)
-    ↓  regime (BULL/BEAR/TRANSITION/STRESS) + sector universe
+    ↓  regime detection: BULL / BEAR / TRANSITION / STRESS
+    ↓  GMTF (Global Macro Transmission Framework)
+    ↓  money velocity: M1/M2, credit impulse, TGA, ON-RRP, TED spread
+    ↓  sector universe → ranked by macro regime
+
+MetadronCube (metadron_cube.py)           ← sits between MacroEngine and AlphaOptimizer
+    ↓  Layer 0: FedPlumbingLayer          — H.4.1, SOMA, SOFR, HY spreads, M2V
+    ↓  Layer 1: LiquidityTensor L(t)      — reserves/TGA/ON-RRP/repo/credit → [-1,+1]
+    ↓  Layer 2: ReserveFlowKernel         — impulse response: ΔReserves → ΔEquity/Credit
+    ↓  Risk:    RiskStateModel R(t)        — VIX + realized vol + credit spread → [0,1]
+    ↓  Flow:    CapitalFlowModel F(t)      — sector momentum (leader/laggard detection)
+    ↓  Layer 4: RegimeEngine              — TRENDING / RANGE / STRESS / CRASH
+    ↓  Gate-Z:  GateZAllocator            — 5-sleeve capital allocation
+    │             P1 Directional Equities  | P2 Factor Rotation | P3 Commodities/Macro
+    │             P4 Options Convexity     | P5 Hedges/Volatility
+    └  Risk Governor                       — beta / VaR / leverage / gamma corridor [7%-12%]
+
 AlphaOptimizer (alpha_optimizer.py)
-    ↓  ranked names + optimal weights
+    ↓  CAPM alpha ranking + QLIB factors (150+ technical/fundamental)
+    ↓  portfolio weight optimization (mean-variance, equal-weight)
+    ↓  UniverseClassifier quality tiers A–G
+
 ExecutionEngine (execution_engine.py)
-    ├── MicroPriceEngine          — WonderTrader micro-price signal (primary)
-    ├── ML Vote Ensemble (5 tiers)
-    │     Tier-1  StockPredictionBridge  — ES agent (pure-numpy)
-    │     Tier-2  FinRLBridge           — DRL agent (PPO/A2C/SAC)
-    │     Tier-3  NVIDIATFTAdapter      — multi-horizon ETS/TFT
+    ├── MicroPriceEngine          — WonderTrader: micro_price = (bid×ask_qty + ask×bid_qty)/(ask_qty+bid_qty)
+    ├── ML Vote Ensemble (5 tiers, each votes ±1)
+    │     Tier-1  StockPredictionBridge  — ES agent (pure-numpy 2-layer net)
+    │     Tier-2  FinRLBridge           — DRL agent (PPO/A2C/SAC, Stable-Baselines3)
+    │     Tier-3  NVIDIATFTAdapter      — multi-horizon TFT (P10/P50/P90)
     │     Tier-4  MonteCarloBridge      — ARIMA(1,1,1) + Laplacian MC
-    │     Tier-5  UniverseClassifier    — top-down vs bottom-up quality
-    ├── DeepTradingFeatures       — 12-feature state enrichment (all tiers)
-    ├── KServeAdapter             — production serving (optional)
-    ├── ExchangeCoreAdapter       — order book (paper mode)
-    └── DailyUniverseScanner      — pre-market universe ranking
+    │     Tier-5  UniverseClassifier    — top-down XGBoost + bottom-up fundamentals
+    ├── DeepTradingFeatures       — 12-feature state (bull/bear technicals + regime one-hot)
+    ├── ConvictionOverride        — controlled guardrail break (conviction≥90 + hedge required)
+    ├── KServeAdapter             — production model serving (optional)
+    ├── ExchangeCoreAdapter       — order book simulation (paper mode, LMAX pattern)
+    └── DailyUniverseScanner      — pre-market universe ranking (CAPM alpha + ML score)
+
+Monitoring Layer (src/monitoring/)
+    ├── daily_report.py           — open/close reports (9:30 ET / 4:00 ET)
+    ├── hourly_recap.py           — hourly transaction + PnL recap
+    ├── heatmap.py                — full universe heatmap by GICS sector
+    ├── anomaly_detector.py       — price/volume/correlation/regime anomalies (σ-ranked)
+    ├── market_wrap.py            — daily narrative: equities/rates/FX/commodities
+    └── memory_monitor.py         — RAM, API usage, log sizes, token estimation
+
+Agent Scorecard (src/agents/agent_scorecard.py)
+    ├── 25 agents tracked (12 investor personas + 6 analytical + 7 engines)
+    ├── Weekly scores: accuracy + Sharpe + hit rate
+    └── Tier hierarchy: General → Captain → Lieutenant → Recruit
+
+PlatformOrchestrator (platform_orchestrator.py)
+    └── Ties: UniverseEngine → MacroEngine → MetadronCube → AlphaOptimizer → ExecutionEngine
 ```
 
 ### Signal flow
