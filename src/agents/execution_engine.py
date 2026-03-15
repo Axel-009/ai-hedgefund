@@ -103,6 +103,15 @@ except ImportError:
     except ImportError:
         _KServeAdapter = None
 
+# Monte Carlo bridge (ARIMA + Laplacian MC prediction intervals)
+try:
+    from src.models.monte_carlo_bridge import MonteCarloBridge as _MCBridge
+except ImportError:
+    try:
+        from models.monte_carlo_bridge import MonteCarloBridge as _MCBridge
+    except ImportError:
+        _MCBridge = None
+
 EXEC_LOG_PATH = Path(__file__).parent / "execution_log.jsonl"
 UNIVERSE_LOG  = Path(__file__).parent / "daily_universe.jsonl"
 
@@ -183,6 +192,8 @@ class SignalType(Enum):
     DRL_AGENT_SELL   = "DRL_AGENT_SELL"  # FinRL PPO/A2C/SAC DRL agent
     TFT_BUY          = "TFT_BUY"         # NVIDIA TFT multi-horizon forecast
     TFT_SELL         = "TFT_SELL"        # NVIDIA TFT multi-horizon forecast
+    MC_BUY           = "MC_BUY"          # ARIMA+Laplacian MC P(up)>55%
+    MC_SELL          = "MC_SELL"         # ARIMA+Laplacian MC P(up)<45%
     HOLD             = "HOLD"
 
 @dataclass
@@ -504,6 +515,7 @@ class DailyUniverseScanner:
             ml_score  = 0.0  # ES agent (Stock-Prediction-Models)
             drl_score = 0.0  # DRL agent (FinRL)
             tft_score = 0.0  # TFT forecast (NVIDIA)
+            mc_score  = 0.0  # Monte Carlo ARIMA+Laplacian
             vol_regime = "MED_VOL"
 
             if ml_bridge is not None:
@@ -535,10 +547,18 @@ class DailyUniverseScanner:
                 vol_regime = _dt.vol_regime(closes_list)
             except Exception:
                 pass
+
+            # Monte Carlo score
+            try:
+                from src.models.monte_carlo_bridge import MonteCarloBridge as _MC
+                _mc = _MC()
+                mc_score = _mc.mc_score(ticker, closes_list)
+            except Exception:
+                pass
             # ────────────────────────────────────────────────────────────────
 
             # Combined ML signal: simple average of all available scores
-            ml_signals = [s for s in [ml_score, drl_score, tft_score] if s != 0.0]
+            ml_signals = [s for s in [ml_score, drl_score, tft_score, mc_score] if s != 0.0]
             combined_ml = float(np.mean(ml_signals)) if ml_signals else 0.0
 
             # Vol regime penalty
@@ -559,6 +579,7 @@ class DailyUniverseScanner:
                 "ml_score":        round(ml_score, 4),
                 "drl_score":       round(drl_score, 4),
                 "tft_score":       round(tft_score, 4),
+                "mc_score":        round(mc_score, 4),
                 "combined_ml":     round(combined_ml, 4),
                 "vol_regime":      vol_regime,
                 "is_fallen_angel": is_fallen,
@@ -656,6 +677,8 @@ class ExecutionEngine:
         self.tft_adapter= _TFTAdapter()  if _TFTAdapter  is not None else None
         # KServe production serving adapter
         self.kserve     = _KServeAdapter() if _KServeAdapter is not None else None
+        # Monte Carlo bridge (ARIMA+Laplacian MC — prediction intervals + P(ITM))
+        self.mc_bridge  = _MCBridge()      if _MCBridge      is not None else None
 
         loaded = [
             ("StockPredictionBridge",   self.ml_bridge),
@@ -663,6 +686,7 @@ class ExecutionEngine:
             ("DeepTradingFeatures",     self.dt_features),
             ("NVIDIATFTAdapter",        self.tft_adapter),
             ("KServeAdapter",           self.kserve),
+            ("MonteCarloBridge",        self.mc_bridge),
         ]
         for name, obj in loaded:
             if obj is not None:
@@ -757,6 +781,18 @@ class ExecutionEngine:
                 vote_score += (-1 if micro_is_buy else 1)
                 tags.append("TFT:" + ("✗" if micro_is_buy else "✓"))
 
+        # Monte Carlo (tier-4) — ARIMA+Laplacian P(up) probability signal
+        if self.mc_bridge is not None:
+            mc_sig = self.mc_bridge.get_signal(ticker, dt_close)
+            if mc_sig == "MC_BUY":
+                vote_score += (1 if micro_is_buy else -1)
+                prob = self.mc_bridge._last_probs.get(ticker, 0.5)
+                tags.append(f"MC:{'✓' if micro_is_buy else '✗'}(P={prob:.2f})")
+            elif mc_sig == "MC_SELL":
+                vote_score += (-1 if micro_is_buy else 1)
+                prob = self.mc_bridge._last_probs.get(ticker, 0.5)
+                tags.append(f"MC:{'✗' if micro_is_buy else '✓'}(P={prob:.2f})")
+
         # Adjust edge threshold based on vote
         bps_penalty = max(0, -vote_score)   # +1bps per negative vote
         effective_min_edge = self.micro.MIN_EDGE_BPS + bps_penalty
@@ -845,6 +881,7 @@ class ExecutionEngine:
         if self.tft_adapter is not None: summary["tft_adapter"] = self.tft_adapter.status()
         if self.kserve      is not None: summary["kserve"]      = self.kserve.status()
         if self.dt_features is not None: summary["dt_features"] = self.dt_features.status()
+        if self.mc_bridge   is not None: summary["mc_bridge"]   = self.mc_bridge.status()
         return summary
 
 
@@ -918,6 +955,13 @@ def build_resource_index() -> dict:
             "path": "/home/user/DeepLearning",
             "role": "DL reference, Li Hang Statistical Learning Methods",
             "key_modules": ["Projects/lihang-code", "notes", "books"],
+        },
+        "MC-Gist (ARIMA+Laplacian)": {
+            "path": "/home/user/gist-b16f9d8cd0a9e817fd3baa3ce3cd0194",
+            "role": "ARIMA(1,1,1)+Laplacian MC prediction intervals, P(ITM) for options",
+            "key_modules": [
+                "Daily Monte Carlo Simulation for Stock Price Prediction Intervals.ipynb"
+            ],
         },
         "wondertrader": {
             "path": "/home/user/wondertrader",
@@ -1011,6 +1055,7 @@ def run_execution_arm(paper_nlv: float = 1_000_000.0) -> dict:
         ("tft_adapter", "TFT        (NVIDIA DeepLearningExamples)"),
         ("dt_features", "Features   (Deep-Trading)"),
         ("kserve",      "Serving    (KServe)"),
+        ("mc_bridge",   "Monte Carlo(ARIMA+Laplacian gist)"),
     ]:
         if bridge_key in summary:
             b = summary[bridge_key]
