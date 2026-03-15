@@ -337,6 +337,15 @@ def main() -> None:
     log_path = log_alerts(alerts, snapshot)
     hourly_data["log_path"] = log_path
 
+    # Live earnings graph — regenerated every hour
+    try:
+        from reporting.live_earnings_graph import generate as gen_graph
+        graph_path = gen_graph()
+        hourly_data["earnings_graph"] = graph_path
+        logger.info(f"Earnings graph updated: {graph_path}")
+    except Exception as _eg:
+        logger.debug(f"Earnings graph skipped: {_eg}")
+
     logger.info(f"{'='*50}")
     logger.info(f"  HOURLY UPDATE COMPLETE — NAV: ${snapshot['nav']:,.2f}")
     logger.info(f"{'='*50}\n")

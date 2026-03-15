@@ -355,6 +355,15 @@ def main() -> None:
     heatmap_path = generate_heatmap()
     session_data["heatmap"] = heatmap_path
 
+    # Step 7b: Final earnings graph for the day
+    try:
+        from reporting.live_earnings_graph import generate as gen_graph
+        graph_path = gen_graph()
+        session_data["earnings_graph"] = graph_path
+        logger.info(f"Final earnings graph: {graph_path}")
+    except Exception as _eg:
+        logger.debug(f"Earnings graph skipped: {_eg}")
+
     # Weekly scoring (Fridays)
     run_weekly_scoring()
 
