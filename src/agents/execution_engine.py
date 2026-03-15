@@ -5,6 +5,7 @@ Integrates:
   - WonderTrader micro-price imbalance signal (translated C++ logic → Python)
   - exchange-core order matching concepts (LMAX Disruptor pattern in Python)
   - yfinance Level-1 quote simulation (live L1 data when broker connected)
+  - Stock-Prediction-Models Evolution Strategy agent (ML confirmation signal)
 
 Scope: US SECURITIES ONLY
   - US equities (NYSE, NASDAQ, CBOE)
@@ -16,16 +17,27 @@ Architecture position:
     MacroEngine → sector universe
     AlphaOptimizer → ranked names + weights
     ExecutionEngine → tick-level arb + order management
-    ExchangeCoreAdapter → order book + matching (Java bridge or paper)
+        ├── MicroPriceEngine (WonderTrader — primary signal)
+        ├── StockPredictionBridge (huseinzol05 ES agent — confirmation)
+        └── ExchangeCoreAdapter → order book + matching (Java bridge or paper)
 
-Signal: WonderTrader micro-price imbalance
-    micro_price = (bid * ask_qty + ask * bid_qty) / (ask_qty + bid_qty)
-    micro_price > last → BUY  (book imbalance favors upward move)
-    micro_price < last → SELL (book imbalance favors downward move)
-    Threshold: |micro_price - last| / last > MIN_EDGE to filter noise
+Signal layer:
+    Primary:      WonderTrader micro-price imbalance
+                  micro_price = (bid*ask_qty + ask*bid_qty) / (ask_qty+bid_qty)
+                  micro_price > last → MICRO_PRICE_BUY
+                  micro_price < last → MICRO_PRICE_SELL
+
+    Confirmation: Stock-Prediction-Models Evolution Strategy agent
+                  Pure-numpy 2-layer net (window=20 bars close+volume)
+                  Actions: ML_AGENT_BUY | ML_AGENT_SELL | HOLD(None)
+
+    Blending:
+                  BOTH agree (BUY+BUY or SELL+SELL) → edge threshold stays at 2bps
+                  ML disagrees                       → edge threshold raised +1bps
+                  ML=HOLD                            → micro-price signal used as-is
 
 Daily universe review: scans full macro-driven universe for RV
-  → ranks by: CAPM residual alpha + micro-price edge + CtV score
+  → ranks by: CAPM residual alpha + ML directional score + CtV score
   → top-N names routed to order execution
 """
 
@@ -44,6 +56,16 @@ from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass, field, asdict
 from enum import Enum
+
+# Stock-Prediction-Models bridge (pure-numpy ES agent)
+try:
+    from src.models.stock_prediction_bridge import StockPredictionBridge as _SPBridge
+except ImportError:
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+        from models.stock_prediction_bridge import StockPredictionBridge as _SPBridge
+    except ImportError:
+        _SPBridge = None
 
 EXEC_LOG_PATH = Path(__file__).parent / "execution_log.jsonl"
 UNIVERSE_LOG  = Path(__file__).parent / "daily_universe.jsonl"
@@ -119,6 +141,8 @@ class SignalType(Enum):
     RV_LONG          = "RV_LONG"
     RV_SHORT         = "RV_SHORT"
     FALLEN_ANGEL_BUY = "FALLEN_ANGEL_BUY"
+    ML_AGENT_BUY     = "ML_AGENT_BUY"     # Stock-Prediction-Models ES agent
+    ML_AGENT_SELL    = "ML_AGENT_SELL"    # Stock-Prediction-Models ES agent
     HOLD             = "HOLD"
 
 @dataclass
@@ -218,7 +242,8 @@ class MicroPriceEngine:
         Translated from stra_buy/stra_sell with getPriceTick() * _offset
         """
         offset = self.TICK_OFFSET * self.US_TICK_SIZE
-        if signal.signal == SignalType.MICRO_PRICE_BUY:
+        buy_signals  = {SignalType.MICRO_PRICE_BUY,  SignalType.ML_AGENT_BUY}
+        if signal.signal in buy_signals:
             return round(signal.last_price + offset, 2)
         else:
             return round(signal.last_price - offset, 2)
@@ -360,10 +385,17 @@ class DailyUniverseScanner:
 
     def scan(self, macro_regime: str = "TRANSITION",
              macro_universe: Optional[list] = None,
-             top_n: int = 20) -> dict:
+             top_n: int = 20,
+             ml_bridge=None) -> dict:
         """
         Full daily scan. Returns ranked universe for execution.
         Called once pre-market by the orchestrator.
+
+        Parameters
+        ----------
+        ml_bridge : StockPredictionBridge, optional
+            If provided, adds an ML directional score to each ticker's
+            composite ranking score. Pass the ExecutionEngine's bridge instance.
         """
         print(f"\n[SCANNER] Daily universe scan — regime: {macro_regime}")
 
@@ -382,6 +414,15 @@ class DailyUniverseScanner:
         prices = self._fetch(us_only[:40])  # cap at 40 for speed
         if prices.empty or len(prices.columns) < 2:
             return {"ranked": us_only[:top_n], "scores": {}, "rv_pairs": []}
+
+        # Try to fetch volume for ML scoring
+        try:
+            import yfinance as yf
+            raw_full = yf.download(list(prices.columns), start=self.start,
+                                   progress=False, auto_adjust=True)
+            vol_df = raw_full["Volume"] if isinstance(raw_full.columns, pd.MultiIndex) else None
+        except Exception:
+            vol_df = None
 
         returns = np.log(prices / prices.shift(1)).dropna()
         mkt_ret = returns.mean(axis=1)
@@ -413,15 +454,29 @@ class DailyUniverseScanner:
             is_fallen = ticker in US_UNIVERSE["fallen_angel_equity"]
             fallen_bonus = 0.03 if is_fallen else 0.0   # Structural edge bonus
 
-            score = alpha_annual + fallen_bonus - max(vol - 0.30, 0) * 0.5
+            # ML directional score from Stock-Prediction-Models ES agent
+            ml_score = 0.0
+            if ml_bridge is not None:
+                try:
+                    closes_list  = prices[ticker].tolist()
+                    vols_list    = (vol_df[ticker].tolist()
+                                    if vol_df is not None and ticker in vol_df.columns
+                                    else [1_000_000.0] * len(closes_list))
+                    ml_score = ml_bridge.ml_score(ticker, closes_list, vols_list)
+                except Exception:
+                    ml_score = 0.0
+
+            # ml_score ∈ [-1, +1]; scaled to ~±2% contribution to ranking
+            score = alpha_annual + fallen_bonus - max(vol - 0.30, 0) * 0.5 + ml_score * 0.02
             scores[ticker] = {
-                "score":        round(score, 4),
-                "alpha_annual": round(alpha_annual, 4),
-                "beta":         round(float(beta), 4),
-                "vol_annual":   round(vol, 4),
-                "mom_60d":      round(mom_60, 4),
+                "score":           round(score, 4),
+                "alpha_annual":    round(alpha_annual, 4),
+                "beta":            round(float(beta), 4),
+                "vol_annual":      round(vol, 4),
+                "mom_60d":         round(mom_60, 4),
+                "ml_score":        round(ml_score, 4),
                 "is_fallen_angel": is_fallen,
-                "category":    self._categorize(ticker),
+                "category":        self._categorize(ticker),
             }
 
         ranked = sorted(scores, key=lambda t: -scores[t]["score"])[:top_n]
@@ -504,6 +559,11 @@ class ExecutionEngine:
         self.book    = ExchangeCoreAdapter()
         self.scanner = DailyUniverseScanner()
 
+        # Stock-Prediction-Models ES agent (confirmation signal layer)
+        self.ml_bridge = _SPBridge() if _SPBridge is not None else None
+        if self.ml_bridge:
+            print("[EXEC] StockPredictionBridge loaded (huseinzol05/Stock-Prediction-Models)")
+
         self._active_universe: list[str] = []
         self._weights:         dict[str, float] = {}
         self._regime:          str = "TRANSITION"
@@ -514,7 +574,7 @@ class ExecutionEngine:
         """Receive regime + universe from MacroEngine."""
         self._regime = macro_result.get("regime", "TRANSITION")
         macro_univ   = macro_result.get("alpha_universe", [])
-        scan = self.scanner.scan(self._regime, macro_univ)
+        scan = self.scanner.scan(self._regime, macro_univ, ml_bridge=self.ml_bridge)
         self._active_universe = scan["ranked"][:15]  # Top 15 US names
         print(f"[EXEC] Active universe updated: {self._active_universe}")
 
@@ -535,10 +595,37 @@ class ExecutionEngine:
         # Check open orders first (WonderTrader: if !_orders.empty() → check_orders())
         self._check_expiry()
 
-        # Generate micro-price signal
+        # Generate micro-price signal (primary)
         signal = self.micro.generate_signal(ticker, bid, ask, bid_size, ask_size, last)
         if signal is None:
             return None
+
+        # ── ML Confirmation (Stock-Prediction-Models ES agent) ────────────────
+        ml_sig = None
+        ml_tag = ""
+        effective_min_edge = self.micro.MIN_EDGE_BPS  # 2.0 bps baseline
+
+        if self.ml_bridge is not None:
+            ml_sig = self.ml_bridge.get_signal(ticker, last)
+            micro_is_buy  = signal.signal == SignalType.MICRO_PRICE_BUY
+            ml_is_buy     = ml_sig == "ML_AGENT_BUY"
+            ml_is_sell    = ml_sig == "ML_AGENT_SELL"
+
+            if ml_sig is not None:
+                if (micro_is_buy and ml_is_buy) or (not micro_is_buy and ml_is_sell):
+                    # Both agree — confirmed, threshold stays
+                    ml_tag = "✓ML-CONFIRM"
+                else:
+                    # Disagreement — raise threshold 1bps to dampen noise
+                    effective_min_edge += 1.0
+                    ml_tag = "✗ML-DISAGREE(+1bps)"
+            else:
+                ml_tag = "ML-HOLD"
+
+        # Re-check edge with (possibly raised) threshold
+        if signal.edge_bps < effective_min_edge:
+            return None
+        # ─────────────────────────────────────────────────────────────────────
 
         # Position check — US equities: long-only for now
         cur_pos = self.book.get_position(ticker)
@@ -570,7 +657,7 @@ class ExecutionEngine:
         print(
             f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]} | "
             f"{action} {qty} {ticker} @ {limit_px:.2f} | "
-            f"edge={signal.edge_bps:.1f}bps | micro={signal.micro_price:.3f}"
+            f"edge={signal.edge_bps:.1f}bps | micro={signal.micro_price:.3f} | {ml_tag}"
         )
         return order
 
@@ -601,7 +688,7 @@ class ExecutionEngine:
             (f["fill_px"] * f["qty"]) * (-1 if f["action"] == "BUY" else 1)
             for f in fills
         )
-        return {
+        summary = {
             "timestamp":       datetime.now().isoformat(),
             "regime":          self._regime,
             "active_universe": self._active_universe,
@@ -611,6 +698,9 @@ class ExecutionEngine:
             "pending_orders":  len([o for o in self._pending_orders.values()
                                     if o.status == "PENDING"]),
         }
+        if self.ml_bridge is not None:
+            summary["ml_bridge"] = self.ml_bridge.status()
+        return summary
 
 
 # ==============================================================================
@@ -653,6 +743,7 @@ def run_execution_arm(paper_nlv: float = 1_000_000.0) -> dict:
     print("\n" + "="*60)
     print("  EXECUTION ARM — US SECURITIES HFT")
     print("  WonderTrader Micro-Price + exchange-core Book")
+    print("  + Stock-Prediction-Models ES Agent (ML Confirmation)")
     print("  Scope: US Equities + ETFs + IG/HY Credit")
     print("="*60)
 
@@ -696,6 +787,11 @@ def run_execution_arm(paper_nlv: float = 1_000_000.0) -> dict:
     print(f"  Positions:      {summary['positions']}")
     print(f"  Total Fills:    {summary['total_fills']}")
     print(f"  Gross P&L:      ${summary['gross_pnl']:,.2f}")
+    if "ml_bridge" in summary:
+        mb = summary["ml_bridge"]
+        print(f"\n[ML BRIDGE] {mb['model_type']}")
+        print(f"  Agents primed: {mb['agents_primed']} tickers")
+        print(f"  Last actions:  {mb['last_actions']}")
 
     # 6. Resource index
     res_idx = build_resource_index()
