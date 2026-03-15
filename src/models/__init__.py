@@ -21,8 +21,9 @@ from .nvidia_tft_adapter       import NVIDIATFTAdapter
 from .kserve_adapter           import KServeAdapter
 from .monte_carlo_bridge       import MonteCarloBridge
 from .universe_classifier      import (UniverseClassifier,
-                                       build_dual_regime_features,
-                                       label_from_alpha)
+                                       build_topdown_features,
+                                       label_from_ir,
+                                       FundamentalsStore)
 from .model_evaluator          import ModelEvaluator
 
 __all__ = [
@@ -33,7 +34,8 @@ __all__ = [
     "KServeAdapter",
     "MonteCarloBridge",
     "UniverseClassifier",
-    "build_dual_regime_features",
-    "label_from_alpha",
+    "FundamentalsStore",
+    "build_topdown_features",
+    "label_from_ir",
     "ModelEvaluator",
 ]
