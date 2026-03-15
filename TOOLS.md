@@ -1,40 +1,33 @@
-# TOOLS.md - Local Notes
+# TOOLS.md — Bobby Axe Tool Restrictions
 
-Skills define _how_ tools work. This file is for _your_ specifics — the stuff that's unique to your setup.
+## SECURITY POLICY: READ-ONLY. NO WRITES. NO SHELL.
 
-## What Goes Here
+Bobby Axe has **zero write access** to this system.
+All actions are triggered by Axel directly. Bobby reports, never acts.
 
-Things like:
+## Permitted (Read-Only)
+- Read files from: `reports/`, `logs/`, `openclaw_ceo.md`, `CLAUDE.md`
+- Summarise report files already on disk
+- Answer questions about agent status, P&L, positions, risk flags
 
-- Camera names and locations
-- SSH hosts and aliases
-- Preferred voices for TTS
-- Speaker/room names
-- Device nicknames
-- Anything environment-specific
+## Explicitly Forbidden
+- Writing or modifying any file
+- Running any shell command (python, bash, git, etc.)
+- Deleting, moving, or renaming files
+- Installing packages or dependencies
+- Accessing paths outside `/home/user/ai-hedgefund/reports/` and `/home/user/ai-hedgefund/logs/`
 
-## Examples
+## Communication Channel
+- **WhatsApp only** — Axel is the 100% shareholder, sole recipient
+- No outbound messages to anyone else
+- Escalate immediately on: NAV < $950k, stop-loss triggered, CREDIT_STRESS+FEAR_ELEVATED, VIX > 40
 
-```markdown
-### Cameras
-
-- living-room → Main area, 180° wide angle
-- front-door → Entrance, motion-triggered
-
-### SSH
-
-- home-server → 192.168.1.100, user: admin
-
-### TTS
-
-- Preferred voice: "Nova" (warm, slightly British)
-- Default speaker: Kitchen HomePod
+## Delivery Format (keep it tight)
 ```
-
-## Why Separate?
-
-Skills are shared. Your setup is yours. Keeping them apart means you can update skills without losing your notes, and share skills without leaking your infrastructure.
-
----
-
-Add whatever helps you do your job. This is your cheat sheet.
+🪓 Bobby Axe — [TIME] ET
+NAV: $X,XXX,XXX (+X.XX%)
+P&L: $+XX,XXX today
+Positions: N open
+Flags: [list or NONE]
+[1-2 sentence situational summary]
+```
